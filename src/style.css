@@ -185,10 +185,13 @@ button:hover {
 
 .app-footer {
   display: flex;
+  gap: 16px;
   justify-content: flex-end;
 }
 
 .link-button {
+  display: inline-flex;
+  align-items: center;
   height: auto;
   padding: 0;
   border: 0;
@@ -198,6 +201,10 @@ button:hover {
   font-size: 0.9rem;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.link-button:visited {
+  color: #53617d;
 }
 
 .link-button:hover {
@@ -387,7 +394,7 @@ button:focus-visible {
 
 .modal-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.45fr);
+  grid-template-columns: minmax(0, 1fr) repeat(2, minmax(180px, 0.45fr));
   gap: 16px;
 }
 

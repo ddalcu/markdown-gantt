@@ -1,7 +1,7 @@
 # Markdown Gantt
 
-A small Vite app that renders a Frappe Gantt chart from editable markdown tables.
-Markdown edits update the chart, and chart edits update the markdown.
+A small Vite app that renders a no-dependency Gantt chart from editable markdown
+tables. Markdown edits update the chart, and chart edits update the markdown.
 
 ## Run It
 
@@ -9,6 +9,8 @@ Markdown edits update the chart, and chart edits update the markdown.
 npm install
 npm run dev
 ```
+
+Open the app at `/`.
 
 ## Markdown Format
 
@@ -58,8 +60,9 @@ its progress is derived from completed subtasks instead of the task row's
 In the chart view:
 
 - Drag or resize bars to update task `start` and `end`.
+- Drag tasks up or down to sort task rows.
 - Click a task to open the task modal.
-- Assign a task from the modal.
+- Assign a task and choose a parent task from the modal.
 - Add, assign, and complete subtasks from the modal.
 - Use **Add task** to append a new task row.
 
