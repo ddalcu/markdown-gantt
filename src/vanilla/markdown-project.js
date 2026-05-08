@@ -23,6 +23,7 @@ const HEADER_ALIASES = {
   assigned: 'assignee',
   complete: 'done',
   completed: 'done',
+  track: 'lane',
 };
 
 export const defaultMarkdown = `# Product Launch Roadmap
@@ -119,6 +120,28 @@ export function buildGanttTasks(project) {
   });
 }
 
+export function collectTaskLaneOptions(project) {
+  const lanes = new Set();
+  const headers = canonicalHeaders(project.taskTable);
+  const laneIdx = headers.indexOf('lane');
+
+  if (laneIdx >= 0) {
+    for (const row of project.taskTable.rows) {
+      const cell = String(row[laneIdx] ?? '').trim();
+      if (cell) {
+        lanes.add(cell);
+      }
+    }
+  }
+
+  for (const task of project.tasks) {
+    lanes.add(task.lane ?? task.id);
+    lanes.add(task.id);
+  }
+
+  return [...lanes].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
 export function updateTaskById(markdown, taskId, updates, fallbackLineIndex = null) {
   const project = parseProject(markdown);
   const rowLineIndex = findRowLineIndexById(project.taskTable, taskId, fallbackLineIndex);
@@ -144,6 +167,50 @@ export function updateSubtaskById(markdown, subtaskId, updates) {
   }
 
   return updateTableRow(markdown, project.subtaskTable, rowLineIndex, updates);
+}
+
+export function removeMarkdownTask(markdown, taskId) {
+  const project = parseProject(markdown);
+  const subtasks = project.subtasksByTask.get(taskId) ?? [];
+
+  if (subtasks.length > 0) {
+    throw new Error('Remove all subtasks before deleting this task.');
+  }
+
+  const rowLineIndex = findRowLineIndexById(project.taskTable, taskId);
+
+  if (rowLineIndex === null) {
+    throw new Error(`Could not find task row for "${taskId}".`);
+  }
+
+  let next = markdown;
+
+  for (const task of project.tasks) {
+    if (task.id === taskId) {
+      continue;
+    }
+
+    const deps = splitDependencies(task.dependencies);
+
+    if (!deps.includes(taskId)) {
+      continue;
+    }
+
+    next = updateTableRow(next, project.taskTable, task._markdownRowIndex, {
+      dependencies: deps.filter((dependency) => dependency !== taskId).join(', '),
+    });
+  }
+
+  const refreshed = parseProject(next);
+  const deleteLineIndex = findRowLineIndexById(refreshed.taskTable, taskId);
+
+  if (deleteLineIndex === null) {
+    throw new Error(`Could not find task row for "${taskId}".`);
+  }
+
+  const lines = next.split('\n');
+  lines.splice(deleteLineIndex, 1);
+  return lines.join('\n');
 }
 
 export function reorderTaskRows(markdown, orderedIds) {
@@ -180,6 +247,50 @@ export function appendMarkdownTask(markdown) {
   });
 }
 
+export function appendMarkdownTaskAfter(markdown, afterTaskId, lane) {
+  const withLane = ensureTaskLaneColumn(markdown);
+  const project = parseProject(withLane);
+  const rowLineIndex = findRowLineIndexById(project.taskTable, afterTaskId);
+
+  if (rowLineIndex === null) {
+    throw new Error(`Could not find task row for "${afterTaskId}".`);
+  }
+
+  const anchor = project.tasks.find((task) => task.id === afterTaskId);
+
+  if (!anchor) {
+    throw new Error(`Could not find task "${afterTaskId}".`);
+  }
+
+  const table = project.taskTable;
+  const headers = canonicalHeaders(table);
+  const missingColumns = TASK_COLUMNS.filter((column) => !headers.includes(column));
+
+  if (missingColumns.length > 0) {
+    throw new Error(`Table is missing required columns: ${missingColumns.join(', ')}.`);
+  }
+
+  const anchorEnd = parseDateOnly(anchor.end);
+  const newStart = addDays(anchorEnd, 1 + 2);
+  const newEnd = addDays(newStart, 4);
+  const newId = getNextTaskId(project);
+  const rowData = {
+    id: newId,
+    name: 'New task',
+    start: formatDate(newStart),
+    end: formatDate(newEnd),
+    progress: '0',
+    dependencies: afterTaskId,
+    assignee: anchor.assignee?.trim() ?? '',
+    lane,
+  };
+  const row = headers.map((header) => String(rowData[header] ?? ''));
+  const lines = withLane.split('\n');
+  lines.splice(rowLineIndex + 1, 0, formatMarkdownRow(row));
+
+  return { markdown: lines.join('\n'), newTaskId: newId };
+}
+
 export function appendMarkdownSubtask(markdown, taskId) {
   const project = parseProject(markdown);
 
@@ -210,6 +321,8 @@ function parseTasksFromTable(table) {
       throw new Error(`Task "${name}" starts after it ends.`);
     }
 
+    const laneCell = String(task.lane ?? '').trim();
+
     return {
       id,
       name,
@@ -218,9 +331,44 @@ function parseTasksFromTable(table) {
       progress: normalizeProgress(task.progress, name),
       dependencies: splitDependencies(task.dependencies).join(', '),
       assignee: task.assignee?.trim() ?? '',
+      lane: laneCell || id,
       _markdownRowIndex: table.rowLineIndexes[index],
     };
   });
+}
+
+export function ensureTaskLaneColumn(markdown) {
+  const project = parseProject(markdown);
+  const table = project.taskTable;
+  const headersCanon = canonicalHeaders(table);
+
+  if (headersCanon.includes('lane')) {
+    return markdown;
+  }
+
+  const lines = markdown.split('\n');
+  const nh = table.normalizedHeaders.map((header) => HEADER_ALIASES[header] ?? header);
+  const assigneeIdx = nh.indexOf('assignee');
+  const insertPos = assigneeIdx >= 0 ? assigneeIdx + 1 : nh.length;
+  const idIdx = nh.indexOf('id');
+
+  const newHeaders = [...table.headers];
+  newHeaders.splice(insertPos, 0, 'lane');
+  lines[table.headerLineIndex] = formatMarkdownRow(newHeaders);
+
+  const sepCells = splitMarkdownRow(lines[table.separatorLineIndex]);
+  sepCells.splice(insertPos, 0, '---');
+  lines[table.separatorLineIndex] = formatMarkdownRow(sepCells);
+
+  for (let index = 0; index < table.rows.length; index += 1) {
+    const row = [...table.rows[index]];
+    const lineIndex = table.rowLineIndexes[index];
+    const defaultLane = idIdx >= 0 ? String(row[idIdx] ?? '').trim() || `task-${index + 1}` : `task-${index + 1}`;
+    row.splice(insertPos, 0, defaultLane);
+    lines[lineIndex] = formatMarkdownRow(row);
+  }
+
+  return lines.join('\n');
 }
 
 function parseAssigneesFromTable(table) {

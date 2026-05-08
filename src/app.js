@@ -4,9 +4,13 @@ import { VanillaGantt } from './vanilla/gantt.js';
 import {
   appendMarkdownSubtask,
   appendMarkdownTask,
+  appendMarkdownTaskAfter,
   buildGanttTasks,
+  collectTaskLaneOptions,
   defaultMarkdown,
+  ensureTaskLaneColumn,
   parseProject,
+  removeMarkdownTask,
   reorderTaskRows,
   updateSubtaskById,
   updateTaskById,
@@ -19,6 +23,7 @@ const VIEW_MODE_STORAGE_KEY = 'markdown-gantt:view-mode';
 const ASSIGNEE_STYLE_ID = 'vanilla-assignee-chart-styles';
 const VIEW_MODES = new Set(['Day', 'Week', 'Month', 'Year']);
 const PANELS = new Set(['markdown', 'chart']);
+const MODAL_LANE_OWN_ROW = '__OWN__';
 
 document.querySelector('#app').innerHTML = `
   <header class="app-header">
@@ -59,7 +64,7 @@ document.querySelector('#app').innerHTML = `
       <div class="panel-heading">
         <div>
           <h2 id="chart-title">Gantt Chart</h2>
-          <p>Markdown is the source of truth</p>
+          <p>Markdown is the source of truth. Chart rows (lanes) are set in task details.</p>
         </div>
         <div class="chart-actions">
           <label>
@@ -106,6 +111,11 @@ document.querySelector('#app').innerHTML = `
             Parent task
             <select id="modal-task-parent"></select>
           </label>
+          <label class="modal-lane-field">
+            Chart row (lane)
+            <select id="modal-task-lane-select" aria-describedby="modal-lane-hint"></select>
+            <span id="modal-lane-hint" class="field-hint">Own row keeps this task on its own chart band. Pick any other lane to share that row with those tasks.</span>
+          </label>
         </div>
 
         <section class="subtask-section" aria-labelledby="subtasks-title">
@@ -120,8 +130,11 @@ document.querySelector('#app').innerHTML = `
         </section>
 
         <footer class="modal-actions">
-          <button id="cancel-modal" class="secondary-button" type="button">Cancel</button>
-          <button type="submit">Save changes</button>
+          <button id="delete-task" class="danger-button" type="button" hidden>Delete task</button>
+          <div class="modal-actions-trailing">
+            <button id="cancel-modal" class="secondary-button" type="button">Cancel</button>
+            <button type="submit">Save changes</button>
+          </div>
         </footer>
       </form>
     </section>
@@ -143,11 +156,13 @@ const modalTitle = document.querySelector('#modal-title');
 const modalTaskName = document.querySelector('#modal-task-name');
 const modalTaskAssignee = document.querySelector('#modal-task-assignee');
 const modalTaskParent = document.querySelector('#modal-task-parent');
+const modalTaskLaneSelect = document.querySelector('#modal-task-lane-select');
 const modalSubtasks = document.querySelector('#modal-subtasks');
 const subtaskProgress = document.querySelector('#subtask-progress');
 const closeModalButton = document.querySelector('#close-modal');
 const cancelModalButton = document.querySelector('#cancel-modal');
 const addSubtaskButton = document.querySelector('#add-subtask');
+const deleteTaskButton = document.querySelector('#delete-task');
 
 let gantt = null;
 let lastProject = null;
@@ -192,6 +207,30 @@ taskForm.addEventListener('submit', (event) => {
 });
 closeModalButton.addEventListener('click', closeTaskModal);
 cancelModalButton.addEventListener('click', closeTaskModal);
+deleteTaskButton.addEventListener('click', () => {
+  if (!activeTaskId || !lastProject) {
+    return;
+  }
+
+  const subCount = lastProject.subtasksByTask.get(activeTaskId)?.length ?? 0;
+
+  if (subCount > 0) {
+    return;
+  }
+
+  if (!window.confirm('Delete this task? This cannot be undone.')) {
+    return;
+  }
+
+  try {
+    markdownInput.value = removeMarkdownTask(markdownInput.value, activeTaskId);
+    persistMarkdown();
+    closeTaskModal();
+    refreshFromMarkdown('Task deleted.');
+  } catch (error) {
+    showError(error.message);
+  }
+});
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !taskModal.hidden) {
     closeTaskModal();
@@ -298,6 +337,9 @@ function renderGantt(tasks) {
     on_order_change: (orderedIds) => {
       updateMarkdownTaskOrder(orderedIds);
     },
+    on_add_sibling_task: (task) => {
+      addSiblingTaskFromChart(task);
+    },
   });
 }
 
@@ -317,6 +359,19 @@ function refreshGantt(tasks) {
   gantt.$container.scrollTop = scrollTop;
 }
 
+function addSiblingTaskFromChart(anchorTask) {
+  try {
+    const lane = String(anchorTask.lane ?? '').trim() || anchorTask.id;
+    const { markdown, newTaskId } = appendMarkdownTaskAfter(markdownInput.value, anchorTask.id, lane);
+    markdownInput.value = markdown;
+    persistMarkdown();
+    refreshFromMarkdown('Task added.');
+    openTaskModal(newTaskId);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
 function openTaskModal(taskId) {
   if (!lastProject) {
     return;
@@ -331,9 +386,18 @@ function openTaskModal(taskId) {
   activeTaskId = taskId;
   modalTitle.textContent = task.name;
   modalTaskName.value = task.name;
+  let projectForLanes = lastProject;
+  try {
+    projectForLanes = parseProject(markdownInput.value);
+  } catch {
+    // keep lastProject when markdown is temporarily invalid
+  }
+  renderModalLaneSelect(task.id, collectTaskLaneOptions(projectForLanes), task.lane ?? task.id);
   renderAssigneeOptions(lastProject.assignees, task.assignee);
   renderParentOptions(lastProject.tasks, task);
   renderModalSubtasks(lastProject, task);
+  const subtaskCount = lastProject.subtasksByTask.get(task.id)?.length ?? 0;
+  deleteTaskButton.hidden = subtaskCount > 0;
   taskModal.hidden = false;
   modalTaskName.focus();
 }
@@ -377,6 +441,25 @@ function renderModalSubtasks(project, task) {
 
 function renderAssigneeOptions(assignees, selectedAssignee) {
   modalTaskAssignee.innerHTML = renderAssigneeOptionMarkup(assignees, selectedAssignee);
+}
+
+function renderModalLaneSelect(taskId, lanes, currentLane) {
+  const laneSet = new Set(lanes);
+  laneSet.add(currentLane);
+  const sorted = [...laneSet].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  const rest = sorted.filter((lane) => lane !== taskId);
+  const ownRowSelected = currentLane === taskId;
+
+  const options = [
+    `<option value="${MODAL_LANE_OWN_ROW}" ${ownRowSelected ? 'selected' : ''}>Own row (${escapeHtml(taskId)})</option>`,
+    ...rest.map((lane) => `
+      <option value="${escapeAttribute(lane)}" ${!ownRowSelected && lane === currentLane ? 'selected' : ''}>
+        ${escapeHtml(lane)}
+      </option>
+    `),
+  ];
+
+  modalTaskLaneSelect.innerHTML = options.join('');
 }
 
 function renderParentOptions(tasks, task) {
@@ -427,10 +510,14 @@ function saveTaskModalChanges({ close = false, silent = false } = {}) {
   }
 
   try {
-    let markdown = updateTaskById(markdownInput.value, activeTaskId, {
+    let markdown = ensureTaskLaneColumn(markdownInput.value);
+    markdown = updateTaskById(markdown, activeTaskId, {
       name: modalTaskName.value.trim() || 'Untitled task',
       assignee: modalTaskAssignee.value,
       dependencies: modalTaskParent.value,
+      lane: modalTaskLaneSelect.value === MODAL_LANE_OWN_ROW
+        ? activeTaskId
+        : modalTaskLaneSelect.value || activeTaskId,
     });
 
     modalSubtasks.querySelectorAll('.subtask-row').forEach((row) => {

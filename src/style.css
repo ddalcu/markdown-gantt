@@ -354,12 +354,26 @@ button:focus-visible {
 }
 
 .modal-header,
-.modal-actions,
 .subtask-heading {
   display: flex;
   gap: 16px;
   align-items: center;
   justify-content: space-between;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.modal-actions-trailing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-left: auto;
 }
 
 .modal-header h2,
@@ -392,10 +406,33 @@ button:focus-visible {
   background: #f4f6fb;
 }
 
+.danger-button {
+  color: #b42318;
+  background: #ffffff;
+  border-color: #fecdca;
+}
+
+.danger-button:hover {
+  color: #912018;
+  background: #fef3f2;
+  border-color: #fecdca;
+}
+
 .modal-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) repeat(2, minmax(180px, 0.45fr));
   gap: 16px;
+}
+
+.modal-lane-field {
+  grid-column: 1 / -1;
+}
+
+.field-hint {
+  margin-top: 2px;
+  color: #697792;
+  font-size: 0.78rem;
+  font-weight: 500;
 }
 
 .modal-grid label,

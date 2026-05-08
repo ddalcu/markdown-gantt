@@ -9,6 +9,8 @@ import {
   pixelsToDays,
 } from './timeline.js';
 
+const PLUS_SIBLING_ICON_SRC = `${import.meta.env.BASE_URL}plus-sibling.png`;
+
 export class VanillaGantt {
   constructor(host, tasks, options = {}) {
     this.host = host;
@@ -83,6 +85,10 @@ export class VanillaGantt {
   }
 
   handlePointerStart(event) {
+    if (event.target.closest?.('.bar-add-sibling')) {
+      return;
+    }
+
     const handle = event.target.closest?.('.handle');
     const wrapper = event.target.closest?.('.bar-wrapper');
 
@@ -113,6 +119,7 @@ export class VanillaGantt {
       originalBar: { ...bar },
       originalBars: new Map(this.layout.bars.map((candidate) => [candidate.id, { ...candidate }])),
       dependentIds: this.getTransitiveDependents(task.id).map((dependent) => dependent.id),
+      sortStepPx: this.layout?.sortStepPx ?? 44,
     };
 
     if (this.drag.mode !== 'progress') {
@@ -237,6 +244,17 @@ export class VanillaGantt {
   }
 
   handleClick(event) {
+    if (event.target.closest?.('.bar-add-sibling')) {
+      const wrapper = event.target.closest?.('.bar-wrapper');
+      const task = this.tasks.find((candidate) => candidate.id === wrapper?.dataset?.id);
+
+      if (task) {
+        this.options.on_add_sibling_task?.(task);
+      }
+
+      return;
+    }
+
     const wrapper = event.target.closest?.('.bar-wrapper');
 
     if (!wrapper || event.target.closest?.('.handle')) {
@@ -405,6 +423,7 @@ export class VanillaGantt {
 function normalizeTasks(tasks) {
   return tasks.map((task) => ({
     ...task,
+    lane: String(task.lane ?? '').trim() || task.id,
     progress: Number(task.progress) || 0,
     _start: parseDateOnly(task.start),
     _end: addDays(parseDateOnly(task.end), 1),
@@ -521,6 +540,9 @@ function renderBar(bar) {
       <button class="handle left" type="button" aria-label="Resize ${escapeAttribute(bar.task.name)} start"></button>
       <button class="handle right" type="button" aria-label="Resize ${escapeAttribute(bar.task.name)} end"></button>
       <button class="handle progress" type="button" aria-label="Change ${escapeAttribute(bar.task.name)} progress"></button>
+      <button class="bar-add-sibling" type="button" aria-label="Add task in same chart row">
+        <img class="bar-add-sibling-icon" src="${escapeAttribute(PLUS_SIBLING_ICON_SRC)}" alt="" width="12" height="12" />
+      </button>
     </div>
   `;
 }
@@ -564,22 +586,9 @@ function shouldSortVertically(drag, deltaX, deltaY) {
 }
 
 function getSortTargetIndex(drag, deltaY, taskCount) {
-  const averageRowHeight = getAverageRowHeight([...drag.originalBars.values()]);
-  const deltaRows = Math.round(deltaY / averageRowHeight);
+  const step = drag.sortStepPx ?? 44;
+  const deltaRows = Math.round(deltaY / step);
   return clamp(drag.originalIndex + deltaRows, 0, taskCount - 1);
-}
-
-function getAverageRowHeight(bars) {
-  const sortedBars = bars.toSorted((a, b) => a.y - b.y);
-  const gaps = [];
-
-  for (let index = 1; index < sortedBars.length; index += 1) {
-    gaps.push(sortedBars[index].y - sortedBars[index - 1].y);
-  }
-
-  return gaps.length === 0
-    ? Math.max(44, sortedBars[0]?.height ?? 44)
-    : Math.max(24, gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length);
 }
 
 function moveItem(items, fromIndex, toIndex) {

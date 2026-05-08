@@ -220,3 +220,57 @@
   display: none;
   pointer-events: none;
 }
+
+.bar-add-sibling {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  margin: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition:
+    opacity 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.bar-add-sibling-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.bar-wrapper:hover .bar-add-sibling,
+.bar-add-sibling:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  border-color: rgb(255 255 255 / 0.55);
+  background: rgb(255 255 255 / 0.92);
+  box-shadow: 0 1px 4px rgb(23 32 51 / 0.15);
+}
+
+.bar-add-sibling:hover {
+  border-color: #3154d4;
+  background: #f4f6fb;
+}
+
+.bar-add-sibling:focus-visible {
+  outline: 2px solid #3154d4;
+  outline-offset: 2px;
+}

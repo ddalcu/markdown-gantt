@@ -57,6 +57,24 @@ describe('VanillaGantt', () => {
     expect(host.querySelector('.dependency-path').getAttribute('stroke-linejoin')).toBe('round');
   });
 
+  it('invokes on_add_sibling_task when the + control is clicked', () => {
+    const onAddSibling = vi.fn();
+    new VanillaGantt(host, [
+      {
+        id: 'brief',
+        name: 'Brief',
+        start: '2026-05-07',
+        end: '2026-05-09',
+        progress: 50,
+        lane: 'brief',
+      },
+    ], { view_mode: 'Day', on_add_sibling_task: onAddSibling });
+
+    host.querySelector('[data-id="brief"] .bar-add-sibling').click();
+    expect(onAddSibling).toHaveBeenCalledTimes(1);
+    expect(onAddSibling).toHaveBeenCalledWith(expect.objectContaining({ id: 'brief' }));
+  });
+
   it('previews moved bars during drag before committing snapped date changes', () => {
     const onDateChange = vi.fn();
     const gantt = new VanillaGantt(host, [

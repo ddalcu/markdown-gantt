@@ -141,6 +141,47 @@ describe('markdown gantt page', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe(markdown);
   });
 
+  it('shows delete for tasks without subtasks and removes the task from markdown', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+    localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
+
+    await import('./main.js');
+
+    document.querySelector('[data-id="design"] .bar').click();
+    expect(document.querySelector('#delete-task').hidden).toBe(false);
+
+    document.querySelector('#delete-task').click();
+
+    const markdown = document.querySelector('#markdown-input').value;
+    expect(markdown).not.toContain('| design | Design pass |');
+    expect(markdown).toContain('| brief | Project brief |');
+  });
+
+  it('hides delete in the modal when the task has subtasks', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+    localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
+
+    await import('./main.js');
+
+    document.querySelector('[data-id="brief"] .bar').click();
+    expect(document.querySelector('#delete-task').hidden).toBe(true);
+  });
+
+  it('lists own row plus every other lane in the task modal lane select', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+    localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
+
+    await import('./main.js');
+
+    document.querySelector('[data-id="brief"] .bar').click();
+    const select = document.querySelector('#modal-task-lane-select');
+    const laneValues = [...select.querySelectorAll('option')].map((option) => option.value);
+    expect(laneValues[0]).toBe('__OWN__');
+    expect(laneValues).toContain('design');
+    expect(laneValues).not.toContain('brief');
+    expect(select.value).toBe('__OWN__');
+  });
+
   it('opens the task modal and saves task and subtask edits', async () => {
     localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
     localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
