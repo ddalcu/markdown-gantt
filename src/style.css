@@ -39,11 +39,114 @@ code {
 
 #app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 16px;
   width: 100%;
   height: 100vh;
   padding: 32px;
+}
+
+.tab-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid #dbe1ef;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgb(32 45 85 / 0.06);
+}
+
+.project-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-tab-item {
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid #dbe1ef;
+  border-radius: 12px;
+  background: #f4f6fb;
+}
+
+.project-tab-item.active {
+  border-color: #3154d4;
+  background: #3154d4;
+  box-shadow: 0 8px 18px rgb(49 84 212 / 0.2);
+}
+
+.project-tab {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 0;
+  color: #35415f;
+  background: transparent;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.project-tab:hover {
+  background: rgb(49 84 212 / 0.08);
+}
+
+.project-tab-item.active .project-tab,
+.project-tab-item.active .project-tab:hover {
+  color: #ffffff;
+  background: transparent;
+}
+
+.project-tab-delete {
+  width: 28px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid rgb(23 32 51 / 0.08);
+  border-radius: 0;
+  color: #697792;
+  background: transparent;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.project-tab-delete:hover {
+  color: #ffffff;
+  background: #b42318;
+}
+
+.project-tab-item.active .project-tab-delete {
+  color: rgb(255 255 255 / 0.75);
+  border-left-color: rgb(255 255 255 / 0.25);
+}
+
+.project-tab-item.active .project-tab-delete:hover {
+  color: #ffffff;
+  background: #912018;
+}
+
+.new-project-button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 12px;
+  color: #ffffff;
+  background: #3154d4;
+  border-color: #3154d4;
+  font-size: 1.2rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.new-project-button:hover {
+  background: #2646b7;
 }
 
 .app-header {

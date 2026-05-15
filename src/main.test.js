@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const STORAGE_KEY = 'markdown-gantt:source';
 const PANEL_STORAGE_KEY = 'markdown-gantt:active-panel';
 const VIEW_MODE_STORAGE_KEY = 'markdown-gantt:view-mode';
+const PROJECTS_REGISTRY_KEY = 'markdown-gantt:projects';
+const ACTIVE_PROJECT_KEY = 'markdown-gantt:active-project';
+const PROJECT_SOURCE_KEY_PREFIX = 'markdown-gantt:project:';
+const projectSourceKey = (id) => `${PROJECT_SOURCE_KEY_PREFIX}${id}`;
 
 const roadmapMarkdown = `# Roadmap
 
@@ -99,7 +103,7 @@ describe('markdown gantt page', () => {
     const markdown = document.querySelector('#markdown-input').value;
     expect(markdown).toContain('| brief | Project brief | 2026-05-10 | 2026-05-12 | 50 |  | Alex |');
     expect(markdown).toContain('| design | Design pass | 2026-05-13 | 2026-05-15 | 0 | brief | Alex |');
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(markdown);
+    expect(localStorage.getItem(projectSourceKey('p1'))).toBe(markdown);
   });
 
   it('persists right-edge resizing as an end-date change', async () => {
@@ -117,7 +121,7 @@ describe('markdown gantt page', () => {
     const markdown = document.querySelector('#markdown-input').value;
     expect(markdown).toContain('| brief | Project brief | 2026-05-07 | 2026-05-11 | 50 |  | Alex |');
     expect(markdown).toContain('| design | Design pass | 2026-05-10 | 2026-05-12 | 0 | brief | Alex |');
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(markdown);
+    expect(localStorage.getItem(projectSourceKey('p1'))).toBe(markdown);
   });
 
   it('persists vertical task sorting to markdown and localStorage', async () => {
@@ -138,7 +142,7 @@ describe('markdown gantt page', () => {
     expect(designIndex).toBeGreaterThan(-1);
     expect(briefIndex).toBeGreaterThan(-1);
     expect(designIndex).toBeLessThan(briefIndex);
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(markdown);
+    expect(localStorage.getItem(projectSourceKey('p1'))).toBe(markdown);
   });
 
   it('shows delete for tasks without subtasks and removes the task from markdown', async () => {
@@ -218,7 +222,7 @@ describe('markdown gantt page', () => {
     const markdown = document.querySelector('#markdown-input').value;
     expect(markdown).toContain('| brief | Project brief | 2026-05-07 | 2026-05-09 | 50 | design | Alex |');
     expect(document.querySelector('#task-modal').hidden).toBe(true);
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(markdown);
+    expect(localStorage.getItem(projectSourceKey('p1'))).toBe(markdown);
   });
 
   it('adds tasks and subtasks from the page controls', async () => {
@@ -233,5 +237,127 @@ describe('markdown gantt page', () => {
     document.querySelector('[data-id="brief"] .bar').click();
     document.querySelector('#add-subtask').click();
     expect(document.querySelector('#markdown-input').value).toContain('| brief-subtask-3 | brief | New subtask | false |  |');
+  });
+});
+
+describe('project tab strip', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubGlobal('localStorage', createLocalStorage());
+    vi.stubGlobal('confirm', () => true);
+    localStorage.clear();
+    document.body.innerHTML = '<div id="app"></div>';
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.unstubAllGlobals();
+  });
+
+  it('renders one tab labeled from the markdown H1 on first load', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+
+    await import('./main.js');
+
+    const tabs = [...document.querySelectorAll('#project-tabs .project-tab')];
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].textContent.trim()).toBe('Roadmap');
+    expect(tabs[0].dataset.id).toBe('p1');
+    expect(tabs[0].getAttribute('aria-current')).toBe('page');
+    expect(localStorage.getItem(PROJECTS_REGISTRY_KEY)).toBe(JSON.stringify(['p1']));
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it('creates a second tab and isolates per-tab markdown', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+
+    await import('./main.js');
+
+    document.querySelector('#new-project').click();
+
+    const tabs = [...document.querySelectorAll('#project-tabs .project-tab')];
+    expect(tabs.map((tab) => tab.dataset.id)).toEqual(['p1', 'p2']);
+    expect(tabs[1].getAttribute('aria-current')).toBe('page');
+
+    const textarea = document.querySelector('#markdown-input');
+    expect(textarea.value).toContain('# Product Launch Roadmap');
+    expect(textarea.value).not.toContain('# Roadmap');
+    expect(localStorage.getItem(projectSourceKey('p1'))).toContain('# Roadmap');
+    expect(localStorage.getItem(ACTIVE_PROJECT_KEY)).toBe('p2');
+  });
+
+  it('restores per-tab markdown when switching back to the previous tab', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+
+    await import('./main.js');
+
+    document.querySelector('#new-project').click();
+    document.querySelector('#project-tabs .project-tab[data-id="p1"]').click();
+
+    const textarea = document.querySelector('#markdown-input');
+    expect(textarea.value).toContain('# Roadmap');
+    expect(localStorage.getItem(ACTIVE_PROJECT_KEY)).toBe('p1');
+    const activeTab = document.querySelector('#project-tabs .project-tab-item.active .project-tab');
+    expect(activeTab.dataset.id).toBe('p1');
+  });
+
+  it('updates the active tab label live as the markdown H1 changes', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+
+    await import('./main.js');
+
+    const textarea = document.querySelector('#markdown-input');
+    textarea.value = textarea.value.replace('# Roadmap', '# Plan B');
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const tab = document.querySelector('#project-tabs .project-tab[data-id="p1"]');
+    expect(tab.textContent.trim()).toBe('Plan B');
+  });
+
+  it('confirms then deletes a tab and its per-project source key', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+
+    await import('./main.js');
+
+    document.querySelector('#new-project').click();
+    expect(localStorage.getItem(projectSourceKey('p2'))).not.toBeNull();
+
+    document.querySelector('#project-tabs .project-tab-delete[data-id="p2"]').click();
+
+    const tabs = [...document.querySelectorAll('#project-tabs .project-tab')];
+    expect(tabs.map((tab) => tab.dataset.id)).toEqual(['p1']);
+    expect(localStorage.getItem(projectSourceKey('p2'))).toBeNull();
+    expect(localStorage.getItem(ACTIVE_PROJECT_KEY)).toBe('p1');
+    expect(JSON.parse(localStorage.getItem(PROJECTS_REGISTRY_KEY))).toEqual(['p1']);
+  });
+
+  it('does not delete a tab when the confirm prompt is rejected', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+    vi.unstubAllGlobals();
+    vi.stubGlobal('localStorage', createLocalStorage());
+    vi.stubGlobal('confirm', () => false);
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+
+    await import('./main.js');
+
+    document.querySelector('#project-tabs .project-tab-delete[data-id="p1"]').click();
+
+    expect(JSON.parse(localStorage.getItem(PROJECTS_REGISTRY_KEY))).toEqual(['p1']);
+    expect(localStorage.getItem(projectSourceKey('p1'))).toContain('# Roadmap');
+  });
+
+  it('replaces the last deleted tab with a fresh default project', async () => {
+    localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
+
+    await import('./main.js');
+
+    document.querySelector('#project-tabs .project-tab-delete[data-id="p1"]').click();
+
+    const tabs = [...document.querySelectorAll('#project-tabs .project-tab')];
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].dataset.id).toBe('p1');
+    const textarea = document.querySelector('#markdown-input');
+    expect(textarea.value).toContain('# Product Launch Roadmap');
+    expect(textarea.value).not.toContain('# Roadmap');
   });
 });

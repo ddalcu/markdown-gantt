@@ -15,9 +15,18 @@ import {
   updateSubtaskById,
   updateTaskById,
 } from './vanilla/markdown-project.js';
+import {
+  bootstrapProjects,
+  deriveProjectLabel,
+  loadProjectSource,
+  nextProjectId,
+  removeProjectStorage,
+  saveActiveProjectId,
+  saveProjectIds,
+  saveProjectSource,
+} from './vanilla/projects.js';
 import { formatDate } from './vanilla/timeline.js';
 
-const STORAGE_KEY = 'markdown-gantt:source';
 const PANEL_STORAGE_KEY = 'markdown-gantt:active-panel';
 const VIEW_MODE_STORAGE_KEY = 'markdown-gantt:view-mode';
 const ASSIGNEE_STYLE_ID = 'vanilla-assignee-chart-styles';
@@ -26,13 +35,15 @@ const PANELS = new Set(['markdown', 'chart']);
 const MODAL_LANE_OWN_ROW = '__OWN__';
 
 document.querySelector('#app').innerHTML = `
+
+  <nav class="tab-strip" aria-label="Projects">
+    <ul id="project-tabs" class="project-tabs"></ul>
+    <button id="new-project" class="new-project-button" type="button" aria-label="New project">+</button>
+  </nav>
+
   <header class="app-header">
     <div>
-      <p class="eyebrow">Vanilla renderer</p>
-      <h1>Markdown Gantt</h1>
-      <p class="intro">
-        A no-runtime-dependency Gantt page powered by markdown tables.
-      </p>
+      
     </div>
     <div class="toolbar">
       <div class="panel-toggle" aria-label="Choose active panel">
@@ -163,14 +174,22 @@ const closeModalButton = document.querySelector('#close-modal');
 const cancelModalButton = document.querySelector('#cancel-modal');
 const addSubtaskButton = document.querySelector('#add-subtask');
 const deleteTaskButton = document.querySelector('#delete-task');
+const projectTabsRoot = document.querySelector('#project-tabs');
+const newProjectButton = document.querySelector('#new-project');
 
 let gantt = null;
 let lastProject = null;
 let activeTaskId = null;
 let renderTimer = null;
+let projectIds = [];
+let activeProjectId = null;
 
-markdownInput.value = localStorage.getItem(STORAGE_KEY) ?? defaultMarkdown;
+const bootstrap = bootstrapProjects(localStorage, defaultMarkdown);
+projectIds = bootstrap.ids;
+activeProjectId = bootstrap.activeId;
+markdownInput.value = loadProjectSource(localStorage, activeProjectId) ?? defaultMarkdown;
 viewMode.value = getStoredViewMode();
+renderTabs();
 
 markdownInput.addEventListener('input', () => {
   persistMarkdown();
@@ -200,6 +219,19 @@ addTaskButton.addEventListener('click', () => {
 });
 tabButtons.forEach((button) => {
   button.addEventListener('click', () => setActivePanel(button.dataset.panel));
+});
+newProjectButton.addEventListener('click', handleNewProject);
+projectTabsRoot.addEventListener('click', (event) => {
+  const deleteButton = event.target.closest('.project-tab-delete');
+  if (deleteButton) {
+    handleDeleteProject(deleteButton.dataset.id);
+    return;
+  }
+
+  const tabButton = event.target.closest('.project-tab');
+  if (tabButton) {
+    handleSwitchProject(tabButton.dataset.id);
+  }
 });
 taskForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -599,7 +631,104 @@ function persistViewMode() {
 }
 
 function persistMarkdown() {
-  localStorage.setItem(STORAGE_KEY, markdownInput.value);
+  if (!activeProjectId) {
+    return;
+  }
+  saveProjectSource(localStorage, activeProjectId, markdownInput.value);
+  renderTabs();
+}
+
+function renderTabs() {
+  if (!projectTabsRoot) {
+    return;
+  }
+
+  projectTabsRoot.innerHTML = projectIds.map((id, index) => {
+    const source = id === activeProjectId
+      ? markdownInput.value
+      : (loadProjectSource(localStorage, id) ?? '');
+    const label = deriveProjectLabel(source, index + 1);
+    const active = id === activeProjectId;
+    return `
+      <li class="project-tab-item${active ? ' active' : ''}">
+        <button
+          class="project-tab"
+          type="button"
+          data-id="${escapeAttribute(id)}"
+          ${active ? 'aria-current="page"' : ''}
+        >${escapeHtml(label)}</button>
+        <button
+          class="project-tab-delete"
+          type="button"
+          data-id="${escapeAttribute(id)}"
+          aria-label="Delete project ${escapeAttribute(label)}"
+          title="Delete project"
+        >x</button>
+      </li>
+    `;
+  }).join('');
+}
+
+function handleNewProject() {
+  if (activeProjectId) {
+    saveProjectSource(localStorage, activeProjectId, markdownInput.value);
+  }
+
+  const newId = nextProjectId(projectIds);
+  projectIds = [...projectIds, newId];
+  saveProjectIds(localStorage, projectIds);
+  saveProjectSource(localStorage, newId, defaultMarkdown);
+  switchToProject(newId);
+}
+
+function handleSwitchProject(id) {
+  if (!id || id === activeProjectId || !projectIds.includes(id)) {
+    return;
+  }
+
+  if (activeProjectId) {
+    saveProjectSource(localStorage, activeProjectId, markdownInput.value);
+  }
+
+  switchToProject(id);
+}
+
+function handleDeleteProject(id) {
+  if (!id || !projectIds.includes(id)) {
+    return;
+  }
+
+  if (!window.confirm('Delete this project? Its markdown will be lost. This cannot be undone.')) {
+    return;
+  }
+
+  const removedIndex = projectIds.indexOf(id);
+  projectIds = projectIds.filter((candidate) => candidate !== id);
+  removeProjectStorage(localStorage, id);
+  saveProjectIds(localStorage, projectIds);
+
+  if (projectIds.length === 0) {
+    const fresh = bootstrapProjects(localStorage, defaultMarkdown);
+    projectIds = fresh.ids;
+    switchToProject(fresh.activeId);
+    return;
+  }
+
+  if (id === activeProjectId) {
+    const nextIndex = Math.max(0, removedIndex - 1);
+    switchToProject(projectIds[nextIndex]);
+  } else {
+    renderTabs();
+  }
+}
+
+function switchToProject(id) {
+  activeProjectId = id;
+  saveActiveProjectId(localStorage, id);
+  markdownInput.value = loadProjectSource(localStorage, id) ?? defaultMarkdown;
+  closeTaskModal();
+  renderFromMarkdown();
+  renderTabs();
 }
 
 function showSuccess(text) {

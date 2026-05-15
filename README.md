@@ -3,6 +3,8 @@
 A small Vite app that renders a no-dependency Gantt chart from editable markdown
 tables. Markdown edits update the chart, and chart edits update the markdown.
 
+Live URL: https://ddalcu.github.io/markdown-gantt/
+
 ## Run It
 
 ```sh
