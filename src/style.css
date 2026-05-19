@@ -531,6 +531,19 @@ button:focus-visible {
   grid-column: 1 / -1;
 }
 
+.lane-modal-grid {
+  grid-template-columns: 1fr auto;
+}
+
+.lane-modal-grid input[type="color"] {
+  width: 48px;
+  height: 36px;
+  padding: 2px;
+  border: 1px solid #dbe1ef;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
 .field-hint {
   margin-top: 2px;
   color: #697792;
@@ -568,13 +581,28 @@ button:focus-visible {
 
 .subtask-row {
   display: grid;
-  grid-template-columns: 88px minmax(180px, 1fr) minmax(180px, 0.45fr);
+  grid-template-columns: 88px minmax(180px, 1fr) minmax(180px, 0.45fr) auto;
   gap: 10px;
   align-items: center;
   padding: 10px;
   border: 1px solid #edf0f7;
   border-radius: 14px;
   background: #ffffff;
+}
+
+.subtask-delete {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: #8994ad;
+  align-self: end;
+  margin-bottom: 4px;
+}
+
+.subtask-delete:hover {
+  color: #c9303e;
 }
 
 .check-label {

@@ -15,29 +15,31 @@ const BAR_RADIUS = 8;
 const LANE_PADDING_BOTTOM = 20;
 const LAYER_GAP = 6;
 
-export function layoutTasks(tasks, viewMode = 'Week') {
+const UNLANED_KEY = '__unlaned__';
+
+export function layoutTasks(tasks, viewMode = 'Week', lanes = null) {
   const config = getViewConfig(viewMode);
   const range = getTimelineRange(tasks, viewMode);
-
-  const laneOrder = [];
-  const laneSeen = new Set();
-
-  for (const task of tasks) {
-    const laneKey = getLaneKey(task);
-    if (!laneSeen.has(laneKey)) {
-      laneSeen.add(laneKey);
-      laneOrder.push(laneKey);
-    }
-  }
+  const laneMetaById = new Map((lanes ?? []).map((l) => [l.id, l]));
+  const knownLaneIds = lanes && lanes.length > 0 ? new Set(lanes.map((l) => l.id)) : null;
+  const laneOrder = buildLaneOrder(tasks, lanes);
 
   let yCursor = HEADER_HEIGHT;
   const barsById = new Map();
-  const stripHeights = [];
+  const laneStrips = [];
 
   for (const laneKey of laneOrder) {
-    const tasksInLane = tasks.filter((task) => getLaneKey(task) === laneKey);
+    const tasksInLane = tasks.filter((task) => resolveStripKey(task, knownLaneIds) === laneKey);
     const { bars: laneBars, stripHeight } = layoutLaneStrip(tasksInLane, yCursor, range, config);
-    stripHeights.push(stripHeight);
+    const meta = laneMetaById.get(laneKey);
+
+    laneStrips.push({
+      key: laneKey,
+      name: laneKey === UNLANED_KEY ? 'Unlaned' : (meta?.name ?? laneKey),
+      color: meta?.color ?? null,
+      y: yCursor,
+      height: stripHeight,
+    });
 
     for (const bar of laneBars) {
       barsById.set(bar.id, bar);
@@ -48,6 +50,7 @@ export function layoutTasks(tasks, viewMode = 'Week') {
 
   const bars = tasks.map((task) => barsById.get(task.id));
 
+  const stripHeights = laneStrips.map((s) => s.height);
   const sortStepPx =
     stripHeights.length === 0
       ? ROW_HEIGHT
@@ -61,15 +64,44 @@ export function layoutTasks(tasks, viewMode = 'Week') {
     config,
     dependencies: layoutDependencies(tasks, bars),
     height: yCursor + 20,
+    laneStrips,
     range,
     rowHeight: ROW_HEIGHT,
     sortStepPx,
   };
 }
 
+function resolveStripKey(task, knownLaneIds = null) {
+  const key = getLaneKey(task);
+  if (!key) return UNLANED_KEY;
+  if (knownLaneIds && !knownLaneIds.has(key)) return UNLANED_KEY;
+  return key;
+}
+
+function buildLaneOrder(tasks, lanes) {
+  if (lanes && lanes.length > 0) {
+    const order = lanes.map((l) => l.id);
+    const hasUnlaned = tasks.some((task) => !getLaneKey(task) || !order.includes(getLaneKey(task)));
+    if (hasUnlaned) {
+      order.push(UNLANED_KEY);
+    }
+    return order;
+  }
+
+  const order = [];
+  const seen = new Set();
+  for (const task of tasks) {
+    const key = resolveStripKey(task);
+    if (!seen.has(key)) {
+      seen.add(key);
+      order.push(key);
+    }
+  }
+  return order;
+}
+
 export function getLaneKey(task) {
-  const lane = String(task?.lane ?? '').trim();
-  return lane || task?.id || '';
+  return String(task?.lane ?? '').trim();
 }
 
 function layoutLaneStrip(tasksInLane, laneBaseY, range, config) {

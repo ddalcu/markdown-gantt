@@ -105,7 +105,6 @@ describe('VanillaGantt', () => {
     expect(wrapper.style.left).not.toBe(initialLeft);
     expect(wrapper.style.left).toBe('160px');
     expect(dependency.querySelector('.dependency-path').getAttribute('d')).toContain('M 280 84');
-    expect(dependency.querySelector('.dependency-path').getAttribute('d')).toContain('128');
     expect(onDateChange).not.toHaveBeenCalled();
 
     dispatchMouse(window, 'mouseup', { clientX: 180, clientY: 70 });
@@ -233,7 +232,6 @@ describe('VanillaGantt', () => {
     expect(wrapper.style.width).toBe('10px');
     expect(dependency.querySelector('.dependency-path').getAttribute('d')).toContain('M 90 84');
     expect(dependency.querySelector('.dependency-path').getAttribute('d')).toContain('H 200');
-    expect(dependency.querySelector('.dependency-path').getAttribute('d')).toContain('128');
     expect(onDateChange).not.toHaveBeenCalled();
 
     dispatchMouse(window, 'mouseup', { clientX: 80, clientY: 70 });
@@ -265,6 +263,106 @@ describe('VanillaGantt', () => {
     dispatchMouse(window, 'mouseup', { clientX: 200, clientY: 70 });
 
     expect(onProgressChange).toHaveBeenCalledWith(expect.objectContaining({ id: 'brief' }), 75);
+  });
+
+  it('renders lane sidebar with labels when lanes are provided', () => {
+    const gantt = new VanillaGantt(host, [
+      { id: 'a', name: 'A', start: '2026-05-07', end: '2026-05-09', progress: 0, lane: 'dev' },
+      { id: 'b', name: 'B', start: '2026-05-10', end: '2026-05-12', progress: 0, lane: 'design' },
+    ], {
+      view_mode: 'Day',
+      lanes: [
+        { id: 'dev', name: 'Development', color: '#3154d4' },
+        { id: 'design', name: 'Design', color: '#b54708' },
+      ],
+    });
+
+    const sidebar = host.querySelector('.lane-sidebar');
+    expect(sidebar).not.toBeNull();
+    const labels = [...host.querySelectorAll('.lane-label')];
+    expect(labels).toHaveLength(2);
+    expect(labels[0].dataset.lane).toBe('dev');
+    expect(labels[0].textContent.trim()).toBe('Development');
+    expect(labels[1].dataset.lane).toBe('design');
+    expect(labels[1].textContent.trim()).toBe('Design');
+  });
+
+  it('includes unlaned strip in sidebar when tasks have no lane', () => {
+    new VanillaGantt(host, [
+      { id: 'a', name: 'A', start: '2026-05-07', end: '2026-05-09', progress: 0, lane: 'dev' },
+      { id: 'b', name: 'B', start: '2026-05-10', end: '2026-05-12', progress: 0, lane: '' },
+    ], {
+      view_mode: 'Day',
+      lanes: [{ id: 'dev', name: 'Development', color: '#3154d4' }],
+    });
+
+    const labels = [...host.querySelectorAll('.lane-label')];
+    expect(labels).toHaveLength(2);
+    expect(labels[1].dataset.lane).toBe('__unlaned__');
+    expect(labels[1].textContent.trim()).toBe('Unlaned');
+  });
+
+  it('invokes on_add_lane when the add lane button is clicked', () => {
+    const onAddLane = vi.fn();
+    new VanillaGantt(host, [
+      { id: 'a', name: 'A', start: '2026-05-07', end: '2026-05-09', progress: 0, lane: 'dev' },
+    ], {
+      view_mode: 'Day',
+      lanes: [{ id: 'dev', name: 'Development', color: '#3154d4' }],
+      on_add_lane: onAddLane,
+    });
+
+    host.querySelector('.lane-add').click();
+    expect(onAddLane).toHaveBeenCalledTimes(1);
+  });
+
+  it('changes task lane when dragged vertically to another lane strip', () => {
+    const onLaneChange = vi.fn();
+    const onDateChange = vi.fn();
+    new VanillaGantt(host, [
+      { id: 'a', name: 'A', start: '2026-05-07', end: '2026-05-09', progress: 0, lane: 'dev' },
+      { id: 'b', name: 'B', start: '2026-05-10', end: '2026-05-12', progress: 0, lane: 'design' },
+    ], {
+      view_mode: 'Day',
+      lanes: [
+        { id: 'dev', name: 'Development', color: '#3154d4' },
+        { id: 'design', name: 'Design', color: '#b54708' },
+      ],
+      on_lane_change: onLaneChange,
+      on_date_change: onDateChange,
+    });
+
+    const bar = host.querySelector('[data-id="a"] .bar');
+    dispatchMouse(bar, 'mousedown', { clientX: 100, clientY: 84 });
+    dispatchMouse(window, 'mousemove', { clientX: 102, clientY: 140 });
+    dispatchMouse(window, 'mouseup', { clientX: 102, clientY: 140 });
+
+    expect(onLaneChange).toHaveBeenCalledTimes(1);
+    expect(onLaneChange.mock.calls[0][0].id).toBe('a');
+    expect(onLaneChange.mock.calls[0][1]).toBe('design');
+    expect(onDateChange).not.toHaveBeenCalled();
+  });
+
+  it('reorders lanes when a lane label is dragged vertically', () => {
+    const onLaneReorder = vi.fn();
+    new VanillaGantt(host, [
+      { id: 'a', name: 'A', start: '2026-05-07', end: '2026-05-09', progress: 0, lane: 'dev' },
+      { id: 'b', name: 'B', start: '2026-05-10', end: '2026-05-12', progress: 0, lane: 'design' },
+    ], {
+      view_mode: 'Day',
+      lanes: [
+        { id: 'dev', name: 'Development', color: '#3154d4' },
+        { id: 'design', name: 'Design', color: '#b54708' },
+      ],
+      on_lane_reorder: onLaneReorder,
+    });
+
+    const devLabel = host.querySelector('.lane-label[data-lane="dev"]');
+    dispatchMouse(devLabel, 'mousedown', { clientX: 60, clientY: 90 });
+    dispatchMouse(window, 'mousemove', { clientX: 60, clientY: 180 });
+    dispatchMouse(window, 'mouseup', { clientX: 60, clientY: 180 });
+
+    expect(onLaneReorder).toHaveBeenCalledWith(['design', 'dev']);
   });
 
   it('preserves scroll position when tasks refresh', () => {

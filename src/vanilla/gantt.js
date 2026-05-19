@@ -16,6 +16,7 @@ export class VanillaGantt {
     this.host = host;
     this.options = options;
     this.tasks = normalizeTasks(tasks);
+    this.lanes = options.lanes ?? null;
     this.viewMode = options.view_mode ?? 'Week';
     this.config = toFrappeLikeConfig(getViewConfig(this.viewMode));
     this.bars = [];
@@ -26,20 +27,22 @@ export class VanillaGantt {
     this.$container.style.setProperty('--gv-grid-height', `${options.container_height ?? 320}px`);
     this.$container.addEventListener('mousedown', (event) => this.handlePointerStart(event));
     this.$container.addEventListener('click', (event) => this.handleClick(event));
+    this.$container.addEventListener('dblclick', (event) => this.handleDblClick(event));
 
     host.replaceChildren(this.$container);
     this.attachWindowListeners();
     this.render();
   }
 
-  setupTasks(tasks) {
-    this.setup_tasks(tasks);
+  setupTasks(tasks, lanes) {
+    this.setup_tasks(tasks, lanes);
   }
 
-  setup_tasks(tasks) {
+  setup_tasks(tasks, lanes) {
     const scrollLeft = this.$container.scrollLeft;
     const scrollTop = this.$container.scrollTop;
     this.tasks = normalizeTasks(tasks);
+    if (lanes !== undefined) this.lanes = lanes;
     this.render();
     this.$container.scrollLeft = scrollLeft;
     this.$container.scrollTop = scrollTop;
@@ -57,7 +60,7 @@ export class VanillaGantt {
   }
 
   render() {
-    const layout = layoutTasks(this.tasks, this.viewMode);
+    const layout = layoutTasks(this.tasks, this.viewMode, this.lanes);
     this.layout = layout;
     this.config = toFrappeLikeConfig(layout.config);
     this.bars = layout.bars.map((bar) => ({
@@ -74,18 +77,47 @@ export class VanillaGantt {
       ...layout.bars.map((bar) => bar.x + bar.width + 240),
     );
 
+    const hasSidebar = layout.laneStrips.length > 0;
+    const sidebarHtml = hasSidebar ? renderLaneSidebar(layout) : '';
+
     this.$container.innerHTML = `
-      <div class="gantt vanilla-gantt" style="width: ${contentWidth}px; height: ${layout.height}px;">
-        ${renderCalendarHeader(layout)}
-        <div class="gantt-grid" aria-hidden="true">${renderGrid(layout, contentWidth)}</div>
-        <div class="dependency-layer" aria-hidden="true">${renderDependencies(layout.dependencies)}</div>
-        <div class="bar-layer">${layout.bars.map(renderBar).join('')}</div>
+      <div class="gantt-layout${hasSidebar ? ' has-lanes' : ''}">
+        ${sidebarHtml}
+        <div class="gantt vanilla-gantt" style="width: ${contentWidth}px; height: ${layout.height}px;">
+          ${renderCalendarHeader(layout)}
+          <div class="gantt-grid" aria-hidden="true">${renderGrid(layout, contentWidth)}</div>
+          <div class="dependency-layer" aria-hidden="true">${renderDependencies(layout.dependencies)}</div>
+          <div class="bar-layer">${layout.bars.map(renderBar).join('')}</div>
+        </div>
       </div>
     `;
   }
 
   handlePointerStart(event) {
     if (event.target.closest?.('.bar-add-sibling')) {
+      return;
+    }
+
+    const laneLabel = event.target.closest?.('.lane-label');
+    if (laneLabel && laneLabel.dataset.lane !== '__unlaned__') {
+      event.preventDefault();
+      const strips = this.layout?.laneStrips ?? [];
+      const laneKey = laneLabel.dataset.lane;
+      const laneIndex = strips.findIndex((s) => s.key === laneKey);
+      if (laneIndex === -1) return;
+      this.drag = {
+        mode: 'lane-reorder',
+        laneKey,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        sortActive: false,
+        originalLaneOrder: strips.filter((s) => s.key !== '__unlaned__').map((s) => s.key),
+        originalIndex: strips.filter((s) => s.key !== '__unlaned__').findIndex((s) => s.key === laneKey),
+        sortStepPx: strips.length > 0
+          ? Math.max(44, Math.round(strips.reduce((sum, s) => sum + s.height, 0) / strips.length))
+          : 44,
+      };
       return;
     }
 
@@ -134,7 +166,11 @@ export class VanillaGantt {
 
     if (Math.hypot(event.clientX - this.drag.startX, event.clientY - this.drag.startY) > 2) {
       this.drag.moved = true;
-      this.previewDrag(event.clientX - this.drag.startX, event.clientY - this.drag.startY);
+      if (this.drag.mode === 'lane-reorder') {
+        this.previewLaneReorder(this.drag, event.clientY - this.drag.startY);
+      } else {
+        this.previewDrag(event.clientX - this.drag.startX, event.clientY - this.drag.startY);
+      }
     }
   }
 
@@ -148,6 +184,11 @@ export class VanillaGantt {
 
     if (!drag.moved) {
       this.clearActiveDependencyLines();
+      return;
+    }
+
+    if (drag.mode === 'lane-reorder') {
+      this.commitLaneReorder(drag);
       return;
     }
 
@@ -226,6 +267,12 @@ export class VanillaGantt {
   }
 
   previewSortDrag(drag, deltaY) {
+    const strips = this.layout?.laneStrips ?? [];
+    if (strips.length > 1) {
+      this.previewLaneChangeDrag(drag, deltaY);
+      return;
+    }
+
     const targetIndex = getSortTargetIndex(drag, deltaY, this.tasks.length);
     const sortedTasks = moveItem(drag.originalTasks, drag.originalIndex, targetIndex);
     const sortedOrderIds = sortedTasks.map((task) => task.id);
@@ -243,7 +290,28 @@ export class VanillaGantt {
     this.setActiveDependencyLines(this.getDragDependencyIds(drag));
   }
 
+  previewLaneChangeDrag(drag, deltaY) {
+    const barMidY = drag.originalBar.y + drag.originalBar.height / 2 + deltaY;
+    const strips = this.layout?.laneStrips ?? [];
+    const targetStrip = strips.find((s) => barMidY >= s.y && barMidY < s.y + s.height);
+    const targetLane = targetStrip?.key ?? null;
+
+    drag.sortActive = true;
+    drag.targetLane = targetLane;
+
+    const wrapper = this.getBarElement(drag.taskId);
+    if (wrapper) {
+      wrapper.style.top = `${Math.round(drag.originalBar.y + deltaY)}px`;
+      wrapper.classList.add('is-sorting');
+    }
+  }
+
   handleClick(event) {
+    if (event.target.closest?.('.lane-add')) {
+      this.options.on_add_lane?.();
+      return;
+    }
+
     if (event.target.closest?.('.bar-add-sibling')) {
       const wrapper = event.target.closest?.('.bar-wrapper');
       const task = this.tasks.find((candidate) => candidate.id === wrapper?.dataset?.id);
@@ -266,6 +334,13 @@ export class VanillaGantt {
     if (task) {
       this.options.on_click?.(task);
     }
+  }
+
+  handleDblClick(event) {
+    const label = event.target.closest?.('.lane-label');
+    if (!label || label.dataset.lane === '__unlaned__') return;
+    event.preventDefault();
+    this.options.on_lane_edit?.(label.dataset.lane);
   }
 
   commitProgressDrag(drag, deltaX) {
@@ -332,9 +407,61 @@ export class VanillaGantt {
     this.render();
   }
 
+  previewLaneReorder(drag, deltaY) {
+    const reorderableLanes = drag.originalLaneOrder;
+    const step = drag.sortStepPx;
+    const deltaRows = Math.round(deltaY / step);
+    const targetIndex = clamp(drag.originalIndex + deltaRows, 0, reorderableLanes.length - 1);
+    const newOrder = moveItem(reorderableLanes, drag.originalIndex, targetIndex);
+
+    if (arraysEqual(newOrder, drag.currentOrder ?? drag.originalLaneOrder)) {
+      return;
+    }
+
+    drag.sortActive = true;
+    drag.currentOrder = newOrder;
+
+    if (this.lanes) {
+      const laneById = new Map(this.lanes.map((l) => [l.id, l]));
+      this.lanes = newOrder.map((id) => laneById.get(id)).filter(Boolean);
+    }
+
+    this.render();
+    const label = this.$container.querySelector(`.lane-label[data-lane="${drag.laneKey}"]`);
+    label?.classList.add('is-sorting');
+  }
+
+  commitLaneReorder(drag) {
+    if (!drag.sortActive || !drag.currentOrder) {
+      this.render();
+      return;
+    }
+    this.options.on_lane_reorder?.(drag.currentOrder);
+    this.render();
+  }
+
   commitSortDrag(drag) {
+    if (drag.targetLane !== undefined) {
+      this.commitLaneChangeDrag(drag);
+      return;
+    }
     this.tasks = sortTasksByIds(drag.originalTasks, drag.sortedOrderIds);
     this.options.on_order_change?.(drag.sortedOrderIds);
+    this.render();
+  }
+
+  commitLaneChangeDrag(drag) {
+    const task = this.tasks.find((t) => t.id === drag.taskId);
+    const currentLaneKey = String(task?.lane ?? '').trim() || '__unlaned__';
+    const targetLane = drag.targetLane;
+
+    if (!task || !targetLane || targetLane === currentLaneKey) {
+      this.render();
+      return;
+    }
+
+    const newLane = targetLane === '__unlaned__' ? '' : targetLane;
+    this.options.on_lane_change?.(task, newLane);
     this.render();
   }
 
@@ -423,7 +550,7 @@ export class VanillaGantt {
 function normalizeTasks(tasks) {
   return tasks.map((task) => ({
     ...task,
-    lane: String(task.lane ?? '').trim() || task.id,
+    lane: String(task.lane ?? '').trim(),
     progress: Number(task.progress) || 0,
     _start: parseDateOnly(task.start),
     _end: addDays(parseDateOnly(task.end), 1),
@@ -488,6 +615,31 @@ function renderCalendarTick(tick) {
     <span class="calendar-tick" style="left: ${tick.x}px; width: ${tick.width}px;">
       ${escapeHtml(tick.label)}
     </span>
+  `;
+}
+
+function renderLaneSidebar(layout) {
+  const labels = layout.laneStrips.map((strip) => {
+    const borderStyle = strip.color
+      ? `border-left: 3px solid ${strip.color};`
+      : '';
+    return `
+      <div
+        class="lane-label"
+        data-lane="${escapeAttribute(strip.key)}"
+        style="height: ${strip.height}px; ${borderStyle}"
+      >
+        <span class="lane-label-text">${escapeHtml(strip.name)}</span>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="lane-sidebar" style="height: ${layout.height}px;">
+      <div class="lane-header-spacer"></div>
+      ${labels}
+      <button class="lane-add" type="button" aria-label="Add lane">+ Add lane</button>
+    </div>
   `;
 }
 

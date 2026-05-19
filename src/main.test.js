@@ -8,6 +8,23 @@ const ACTIVE_PROJECT_KEY = 'markdown-gantt:active-project';
 const PROJECT_SOURCE_KEY_PREFIX = 'markdown-gantt:project:';
 const projectSourceKey = (id) => `${PROJECT_SOURCE_KEY_PREFIX}${id}`;
 
+const lanedMarkdown = `# Laned Project
+
+## Lanes
+
+| id | name | color |
+| --- | --- | --- |
+| dev | Development | #3154d4 |
+| design | Design | #b54708 |
+
+## Tasks
+
+| id | name | start | end | progress | dependencies | assignee | lane |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| build | Build API | 2026-05-07 | 2026-05-09 | 0 | | | dev |
+| mockup | Design mockup | 2026-05-10 | 2026-05-12 | 0 | | | design |
+`;
+
 const roadmapMarkdown = `# Roadmap
 
 ## Assignees
@@ -161,17 +178,17 @@ describe('markdown gantt page', () => {
     expect(markdown).toContain('| brief | Project brief |');
   });
 
-  it('hides delete in the modal when the task has subtasks', async () => {
+  it('shows delete in the modal even when the task has subtasks', async () => {
     localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
     localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
 
     await import('./main.js');
 
     document.querySelector('[data-id="brief"] .bar').click();
-    expect(document.querySelector('#delete-task').hidden).toBe(true);
+    expect(document.querySelector('#delete-task').hidden).toBe(false);
   });
 
-  it('lists own row plus every other lane in the task modal lane select', async () => {
+  it('lists lane options in the task modal lane select', async () => {
     localStorage.setItem(STORAGE_KEY, roadmapMarkdown);
     localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
 
@@ -180,10 +197,10 @@ describe('markdown gantt page', () => {
     document.querySelector('[data-id="brief"] .bar').click();
     const select = document.querySelector('#modal-task-lane-select');
     const laneValues = [...select.querySelectorAll('option')].map((option) => option.value);
-    expect(laneValues[0]).toBe('__OWN__');
+    expect(laneValues[0]).toBe('__UNLANED__');
     expect(laneValues).toContain('design');
     expect(laneValues).not.toContain('brief');
-    expect(select.value).toBe('__OWN__');
+    expect(select.value).toBe('__UNLANED__');
   });
 
   it('opens the task modal and saves task and subtask edits', async () => {
@@ -237,6 +254,53 @@ describe('markdown gantt page', () => {
     document.querySelector('[data-id="brief"] .bar').click();
     document.querySelector('#add-subtask').click();
     expect(document.querySelector('#markdown-input').value).toContain('| brief-subtask-3 | brief | New subtask | false |  |');
+  });
+
+  it('renders lane sidebar when a lane table is present', async () => {
+    localStorage.setItem(STORAGE_KEY, lanedMarkdown);
+    localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
+
+    await import('./main.js');
+
+    const sidebar = document.querySelector('.lane-sidebar');
+    expect(sidebar).not.toBeNull();
+    const labels = [...document.querySelectorAll('.lane-label')];
+    expect(labels).toHaveLength(2);
+    expect(labels[0].dataset.lane).toBe('dev');
+    expect(labels[0].textContent.trim()).toBe('Development');
+    expect(labels[1].dataset.lane).toBe('design');
+    expect(labels[1].textContent.trim()).toBe('Design');
+  });
+
+  it('shows lane names in the modal select when a lane table exists', async () => {
+    localStorage.setItem(STORAGE_KEY, lanedMarkdown);
+    localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
+
+    await import('./main.js');
+
+    document.querySelector('[data-id="build"] .bar').click();
+    const select = document.querySelector('#modal-task-lane-select');
+    const options = [...select.querySelectorAll('option')];
+    const labels = options.map((o) => o.textContent.trim());
+    expect(labels).toContain('Development');
+    expect(labels).toContain('Design');
+    expect(labels[0]).toBe('Unlaned');
+    expect(select.value).toBe('dev');
+  });
+
+  it('persists task lane change from chart drag to markdown', async () => {
+    localStorage.setItem(STORAGE_KEY, lanedMarkdown);
+    localStorage.setItem(PANEL_STORAGE_KEY, 'chart');
+
+    await import('./main.js');
+
+    const bar = document.querySelector('[data-id="build"] .bar');
+    dispatchMouse(bar, 'mousedown', { clientX: 100, clientY: 84 });
+    dispatchMouse(window, 'mousemove', { clientX: 102, clientY: 140 });
+    dispatchMouse(window, 'mouseup', { clientX: 102, clientY: 140 });
+
+    const markdown = document.querySelector('#markdown-input').value;
+    expect(markdown).toContain('| build | Build API | 2026-05-07 | 2026-05-09 | 0 |  |  | design |');
   });
 });
 

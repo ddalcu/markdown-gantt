@@ -2,6 +2,7 @@ import './style.css';
 import './vanilla-gantt.css';
 import { VanillaGantt } from './vanilla/gantt.js';
 import {
+  appendLaneRow,
   appendMarkdownSubtask,
   appendMarkdownTask,
   appendMarkdownTaskAfter,
@@ -10,8 +11,12 @@ import {
   defaultMarkdown,
   ensureTaskLaneColumn,
   parseProject,
+  removeLaneRow,
   removeMarkdownTask,
+  removeSubtaskById,
+  reorderLaneRows,
   reorderTaskRows,
+  updateLaneById,
   updateSubtaskById,
   updateTaskById,
 } from './vanilla/markdown-project.js';
@@ -25,14 +30,14 @@ import {
   saveProjectIds,
   saveProjectSource,
 } from './vanilla/projects.js';
-import { formatDate } from './vanilla/timeline.js';
+import { addDays, formatDate, parseDateOnly } from './vanilla/timeline.js';
 
 const PANEL_STORAGE_KEY = 'markdown-gantt:active-panel';
 const VIEW_MODE_STORAGE_KEY = 'markdown-gantt:view-mode';
 const ASSIGNEE_STYLE_ID = 'vanilla-assignee-chart-styles';
 const VIEW_MODES = new Set(['Day', 'Week', 'Month', 'Year']);
 const PANELS = new Set(['markdown', 'chart']);
-const MODAL_LANE_OWN_ROW = '__OWN__';
+const MODAL_LANE_UNLANED = '__UNLANED__';
 
 document.querySelector('#app').innerHTML = `
 
@@ -98,6 +103,39 @@ document.querySelector('#app').innerHTML = `
     <button id="reset-markdown" class="link-button" type="button">Reset to sample</button>
   </footer>
 
+  <div id="lane-modal" class="modal-backdrop" hidden>
+    <section class="task-modal lane-modal" role="dialog" aria-modal="true" aria-labelledby="lane-modal-title">
+      <form id="lane-form">
+        <header class="modal-header">
+          <div>
+            <p class="eyebrow">Lane details</p>
+            <h2 id="lane-modal-title">Lane</h2>
+          </div>
+          <button class="icon-button" id="close-lane-modal" type="button" aria-label="Close lane modal">x</button>
+        </header>
+
+        <div class="modal-grid lane-modal-grid">
+          <label>
+            Lane name
+            <input id="lane-modal-name" type="text" required />
+          </label>
+          <label>
+            Color
+            <input id="lane-modal-color" type="color" value="#3154d4" />
+          </label>
+        </div>
+
+        <footer class="modal-actions">
+          <button id="delete-lane" class="danger-button" type="button">Delete lane</button>
+          <div class="modal-actions-trailing">
+            <button id="cancel-lane-modal" class="secondary-button" type="button">Cancel</button>
+            <button type="submit">Save</button>
+          </div>
+        </footer>
+      </form>
+    </section>
+  </div>
+
   <div id="task-modal" class="modal-backdrop" hidden>
     <section class="task-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <form id="task-form">
@@ -141,7 +179,7 @@ document.querySelector('#app').innerHTML = `
         </section>
 
         <footer class="modal-actions">
-          <button id="delete-task" class="danger-button" type="button" hidden>Delete task</button>
+          <button id="delete-task" class="danger-button" type="button">Delete task</button>
           <div class="modal-actions-trailing">
             <button id="cancel-modal" class="secondary-button" type="button">Cancel</button>
             <button type="submit">Save changes</button>
@@ -174,12 +212,22 @@ const closeModalButton = document.querySelector('#close-modal');
 const cancelModalButton = document.querySelector('#cancel-modal');
 const addSubtaskButton = document.querySelector('#add-subtask');
 const deleteTaskButton = document.querySelector('#delete-task');
+const laneModal = document.querySelector('#lane-modal');
+const laneForm = document.querySelector('#lane-form');
+const laneModalTitle = document.querySelector('#lane-modal-title');
+const laneModalName = document.querySelector('#lane-modal-name');
+const laneModalColor = document.querySelector('#lane-modal-color');
+const closeLaneModalButton = document.querySelector('#close-lane-modal');
+const cancelLaneModalButton = document.querySelector('#cancel-lane-modal');
+const deleteLaneButton = document.querySelector('#delete-lane');
 const projectTabsRoot = document.querySelector('#project-tabs');
 const newProjectButton = document.querySelector('#new-project');
 
 let gantt = null;
 let lastProject = null;
 let activeTaskId = null;
+let isNewTask = false;
+let activeLaneId = null;
 let renderTimer = null;
 let projectIds = [];
 let activeProjectId = null;
@@ -210,9 +258,11 @@ resetButton.addEventListener('click', () => {
 });
 addTaskButton.addEventListener('click', () => {
   try {
-    markdownInput.value = appendMarkdownTask(markdownInput.value);
+    const { markdown, newTaskId } = appendMarkdownTask(markdownInput.value);
+    markdownInput.value = markdown;
     persistMarkdown();
     refreshFromMarkdown('Task added.');
+    openTaskModal(newTaskId, { isNew: true });
   } catch (error) {
     showError(error.message);
   }
@@ -245,12 +295,11 @@ deleteTaskButton.addEventListener('click', () => {
   }
 
   const subCount = lastProject.subtasksByTask.get(activeTaskId)?.length ?? 0;
+  const message = subCount > 0
+    ? `Delete this task and its ${subCount} subtask${subCount > 1 ? 's' : ''}? This cannot be undone.`
+    : 'Delete this task? This cannot be undone.';
 
-  if (subCount > 0) {
-    return;
-  }
-
-  if (!window.confirm('Delete this task? This cannot be undone.')) {
+  if (!window.confirm(message)) {
     return;
   }
 
@@ -263,9 +312,21 @@ deleteTaskButton.addEventListener('click', () => {
     showError(error.message);
   }
 });
+closeLaneModalButton.addEventListener('click', closeLaneModal);
+cancelLaneModalButton.addEventListener('click', closeLaneModal);
+laneForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveLaneModalChanges();
+});
+deleteLaneButton.addEventListener('click', () => {
+  if (!activeLaneId) return;
+  if (!window.confirm('Delete this lane? Tasks in it will become unlaned.')) return;
+  deleteLaneFromModal();
+});
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !taskModal.hidden) {
-    closeTaskModal();
+  if (event.key === 'Escape') {
+    if (!laneModal.hidden) closeLaneModal();
+    else if (!taskModal.hidden) closeTaskModal();
   }
 });
 addSubtaskButton.addEventListener('click', () => {
@@ -297,6 +358,23 @@ modalSubtasks.addEventListener('blur', (event) => {
     saveTaskModalChanges({ silent: true });
   }
 }, true);
+modalSubtasks.addEventListener('click', (event) => {
+  const btn = event.target.closest('.subtask-delete');
+  if (!btn || !activeTaskId) return;
+  const row = btn.closest('.subtask-row');
+  if (!row) return;
+
+  saveTaskModalChanges({ silent: true });
+
+  try {
+    markdownInput.value = removeSubtaskById(markdownInput.value, row.dataset.subtaskId);
+    persistMarkdown();
+    refreshFromMarkdown('Subtask deleted.');
+    openTaskModal(activeTaskId);
+  } catch (error) {
+    showError(error.message);
+  }
+});
 
 renderFromMarkdown();
 setActivePanel(getStoredPanel(), { persist: false, syncChart: false });
@@ -330,7 +408,7 @@ function renderFromMarkdown() {
     lastProject = project;
     injectAssigneeStyles(project.assignees);
     updateTaskCount(project.tasks.length);
-    refreshGantt(tasks);
+    refreshGantt(tasks, project.lanes);
     showSuccess(`Rendered ${project.tasks.length} ${project.tasks.length === 1 ? 'task' : 'tasks'}.`);
   } catch (error) {
     lastProject = null;
@@ -347,10 +425,11 @@ function refreshFromMarkdown(successMessage) {
   }
 }
 
-function renderGantt(tasks) {
+function renderGantt(tasks, lanes) {
   gantt = new VanillaGantt(ganttHost, tasks, {
     view_mode: viewMode.value,
     container_height: getGanttHeight(),
+    lanes: lanes.length > 0 ? lanes : null,
     on_click: (task) => openTaskModal(task.id),
     on_date_change: (task, start, end) => {
       updateMarkdownTask(task, {
@@ -372,12 +451,24 @@ function renderGantt(tasks) {
     on_add_sibling_task: (task) => {
       addSiblingTaskFromChart(task);
     },
+    on_lane_reorder: (orderedLaneIds) => {
+      updateMarkdownLaneOrder(orderedLaneIds);
+    },
+    on_lane_change: (task, newLaneKey) => {
+      updateMarkdownTaskLane(task, newLaneKey);
+    },
+    on_add_lane: () => {
+      addLaneFromChart();
+    },
+    on_lane_edit: (laneId) => {
+      openLaneModal(laneId);
+    },
   });
 }
 
-function refreshGantt(tasks) {
+function refreshGantt(tasks, lanes = []) {
   if (!gantt) {
-    renderGantt(tasks);
+    renderGantt(tasks, lanes);
     return;
   }
 
@@ -385,7 +476,7 @@ function refreshGantt(tasks) {
   const scrollTop = gantt.$container.scrollTop;
   gantt.options.container_height = getGanttHeight();
   gantt.$container.style.setProperty('--gv-grid-height', `${getGanttHeight()}px`);
-  gantt.setup_tasks(tasks);
+  gantt.setup_tasks(tasks, lanes.length > 0 ? lanes : null);
   gantt.change_view_mode(viewMode.value, true);
   gantt.$container.scrollLeft = scrollLeft;
   gantt.$container.scrollTop = scrollTop;
@@ -393,18 +484,18 @@ function refreshGantt(tasks) {
 
 function addSiblingTaskFromChart(anchorTask) {
   try {
-    const lane = String(anchorTask.lane ?? '').trim() || anchorTask.id;
+    const lane = String(anchorTask.lane ?? '').trim();
     const { markdown, newTaskId } = appendMarkdownTaskAfter(markdownInput.value, anchorTask.id, lane);
     markdownInput.value = markdown;
     persistMarkdown();
     refreshFromMarkdown('Task added.');
-    openTaskModal(newTaskId);
+    openTaskModal(newTaskId, { isNew: true });
   } catch (error) {
     showError(error.message);
   }
 }
 
-function openTaskModal(taskId) {
+function openTaskModal(taskId, { isNew = false } = {}) {
   if (!lastProject) {
     return;
   }
@@ -416,6 +507,7 @@ function openTaskModal(taskId) {
   }
 
   activeTaskId = taskId;
+  isNewTask = isNew;
   modalTitle.textContent = task.name;
   modalTaskName.value = task.name;
   let projectForLanes = lastProject;
@@ -424,19 +516,75 @@ function openTaskModal(taskId) {
   } catch {
     // keep lastProject when markdown is temporarily invalid
   }
-  renderModalLaneSelect(task.id, collectTaskLaneOptions(projectForLanes), task.lane ?? task.id);
+  renderModalLaneSelect(task.id, collectTaskLaneOptions(projectForLanes), task.lane ?? '', projectForLanes.lanes ?? []);
   renderAssigneeOptions(lastProject.assignees, task.assignee);
   renderParentOptions(lastProject.tasks, task);
   renderModalSubtasks(lastProject, task);
-  const subtaskCount = lastProject.subtasksByTask.get(task.id)?.length ?? 0;
-  deleteTaskButton.hidden = subtaskCount > 0;
+  deleteTaskButton.hidden = false;
   taskModal.hidden = false;
   modalTaskName.focus();
 }
 
 function closeTaskModal() {
   activeTaskId = null;
+  isNewTask = false;
   taskModal.hidden = true;
+}
+
+function openLaneModal(laneId) {
+  let project = lastProject;
+  try {
+    project = parseProject(markdownInput.value);
+  } catch {
+    // fall back to lastProject
+  }
+
+  if (!project) return;
+
+  const lane = (project.lanes ?? []).find((l) => l.id === laneId);
+  if (!lane) return;
+
+  activeLaneId = laneId;
+  laneModalTitle.textContent = lane.name || laneId;
+  laneModalName.value = lane.name;
+  laneModalColor.value = lane.color || '#3154d4';
+  laneModal.hidden = false;
+  laneModalName.focus();
+  laneModalName.select();
+}
+
+function closeLaneModal() {
+  activeLaneId = null;
+  laneModal.hidden = true;
+}
+
+function saveLaneModalChanges() {
+  if (!activeLaneId) return;
+
+  try {
+    markdownInput.value = updateLaneById(markdownInput.value, activeLaneId, {
+      name: laneModalName.value.trim() || 'Untitled lane',
+      color: laneModalColor.value || '',
+    });
+    persistMarkdown();
+    closeLaneModal();
+    refreshFromMarkdown('Lane updated.');
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function deleteLaneFromModal() {
+  if (!activeLaneId) return;
+
+  try {
+    markdownInput.value = removeLaneRow(markdownInput.value, activeLaneId);
+    persistMarkdown();
+    closeLaneModal();
+    refreshFromMarkdown('Lane deleted.');
+  } catch (error) {
+    showError(error.message);
+  }
 }
 
 function renderModalSubtasks(project, task) {
@@ -467,6 +615,7 @@ function renderModalSubtasks(project, task) {
           ${renderAssigneeOptionMarkup(project.assignees, subtask.assignee)}
         </select>
       </label>
+      <button class="subtask-delete icon-button" type="button" aria-label="Delete subtask">&times;</button>
     </div>
   `).join('');
 }
@@ -475,20 +624,25 @@ function renderAssigneeOptions(assignees, selectedAssignee) {
   modalTaskAssignee.innerHTML = renderAssigneeOptionMarkup(assignees, selectedAssignee);
 }
 
-function renderModalLaneSelect(taskId, lanes, currentLane) {
+function renderModalLaneSelect(taskId, lanes, currentLane, lanesMeta = []) {
+  const laneMetaById = new Map(lanesMeta.map((l) => [l.id, l]));
   const laneSet = new Set(lanes);
-  laneSet.add(currentLane);
+  if (currentLane) laneSet.add(currentLane);
   const sorted = [...laneSet].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   const rest = sorted.filter((lane) => lane !== taskId);
-  const ownRowSelected = currentLane === taskId;
+  const isUnlaned = !currentLane;
 
   const options = [
-    `<option value="${MODAL_LANE_OWN_ROW}" ${ownRowSelected ? 'selected' : ''}>Own row (${escapeHtml(taskId)})</option>`,
-    ...rest.map((lane) => `
-      <option value="${escapeAttribute(lane)}" ${!ownRowSelected && lane === currentLane ? 'selected' : ''}>
-        ${escapeHtml(lane)}
-      </option>
-    `),
+    `<option value="${MODAL_LANE_UNLANED}" ${isUnlaned ? 'selected' : ''}>Unlaned</option>`,
+    ...rest.map((lane) => {
+      const meta = laneMetaById.get(lane);
+      const label = meta ? meta.name : lane;
+      return `
+        <option value="${escapeAttribute(lane)}" ${!isUnlaned && lane === currentLane ? 'selected' : ''}>
+          ${escapeHtml(label)}
+        </option>
+      `;
+    }),
   ];
 
   modalTaskLaneSelect.innerHTML = options.join('');
@@ -536,6 +690,24 @@ function renderAssigneeOptionMarkup(assignees, selectedAssignee) {
   return options.join('');
 }
 
+function datesForLane(laneKey, project, excludeTaskId) {
+  const laneTasks = project.tasks.filter(
+    (t) => t.id !== excludeTaskId && (t.lane ?? '') === laneKey,
+  );
+
+  const today = parseDateOnly(formatDate(new Date()));
+  const latestEnd = laneTasks.reduce(
+    (latest, t) => {
+      const end = parseDateOnly(t.end);
+      return end > latest ? end : latest;
+    },
+    today,
+  );
+
+  const start = addDays(latestEnd, 1);
+  return { start: formatDate(start), end: formatDate(addDays(start, 2)) };
+}
+
 function saveTaskModalChanges({ close = false, silent = false } = {}) {
   if (!activeTaskId) {
     return;
@@ -543,14 +715,24 @@ function saveTaskModalChanges({ close = false, silent = false } = {}) {
 
   try {
     let markdown = ensureTaskLaneColumn(markdownInput.value);
-    markdown = updateTaskById(markdown, activeTaskId, {
+    const chosenLane = modalTaskLaneSelect.value === MODAL_LANE_UNLANED
+      ? ''
+      : modalTaskLaneSelect.value || '';
+
+    const updates = {
       name: modalTaskName.value.trim() || 'Untitled task',
       assignee: modalTaskAssignee.value,
       dependencies: modalTaskParent.value,
-      lane: modalTaskLaneSelect.value === MODAL_LANE_OWN_ROW
-        ? activeTaskId
-        : modalTaskLaneSelect.value || activeTaskId,
-    });
+      lane: chosenLane,
+    };
+
+    if (isNewTask) {
+      const dateUpdates = datesForLane(chosenLane, parseProject(markdown), activeTaskId);
+      Object.assign(updates, dateUpdates);
+      isNewTask = false;
+    }
+
+    markdown = updateTaskById(markdown, activeTaskId, updates);
 
     modalSubtasks.querySelectorAll('.subtask-row').forEach((row) => {
       markdown = updateSubtaskById(markdown, row.dataset.subtaskId, {
@@ -594,6 +776,40 @@ function updateMarkdownTaskOrder(orderedIds) {
     markdownInput.value = reorderTaskRows(markdownInput.value, orderedIds);
     persistMarkdown();
     refreshFromMarkdown('Task order updated.');
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function updateMarkdownLaneOrder(orderedLaneIds) {
+  try {
+    markdownInput.value = reorderLaneRows(markdownInput.value, orderedLaneIds);
+    persistMarkdown();
+    refreshFromMarkdown('Lane order updated.');
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function addLaneFromChart() {
+  try {
+    const result = appendLaneRow(markdownInput.value);
+    markdownInput.value = result.markdown;
+    persistMarkdown();
+    refreshFromMarkdown('Lane added.');
+    openLaneModal(result.newLaneId);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function updateMarkdownTaskLane(task, newLaneKey) {
+  try {
+    let markdown = ensureTaskLaneColumn(markdownInput.value);
+    markdown = updateTaskById(markdown, task.id, { lane: newLaneKey }, task._markdownRowIndex);
+    markdownInput.value = markdown;
+    persistMarkdown();
+    refreshFromMarkdown('Task moved to new lane.');
   } catch (error) {
     showError(error.message);
   }

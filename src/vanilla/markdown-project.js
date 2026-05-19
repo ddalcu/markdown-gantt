@@ -3,6 +3,7 @@ import { addDays, formatDate, parseDateOnly } from './timeline.js';
 export const TASK_COLUMNS = ['id', 'name', 'start', 'end', 'progress', 'dependencies', 'assignee'];
 export const ASSIGNEE_COLUMNS = ['assignee', 'role', 'color'];
 export const SUBTASK_COLUMNS = ['id', 'task', 'name', 'done', 'assignee'];
+export const LANE_COLUMNS = ['id', 'name', 'color'];
 
 const ASSIGNEE_PALETTE = [
   '#3154d4',
@@ -41,15 +42,22 @@ Assignees color task bars. Subtasks drive parent progress when a task has subtas
 | Quinn | qa | #7a2e83 |
 | Rowan | devops | #0e7490 |
 
+## Lanes
+
+| id | name | color |
+| --- | --- | --- |
+| product | Product & Design | #087443 |
+| engineering | Engineering | #3154d4 |
+
 ## Tasks
 
-| id | name | start | end | progress | dependencies | assignee |
-| --- | --- | --- | --- | --- | --- | --- |
-| discovery | Discovery and scope | 2026-05-07 | 2026-05-10 | 0 | | Maya |
-| design | Design prototype | 2026-05-11 | 2026-05-16 | 0 | discovery | Leo |
-| build | Build beta | 2026-05-17 | 2026-05-27 | 0 | design | Aisha |
-| qa | QA and fixes | 2026-05-28 | 2026-06-03 | 0 | build | Quinn |
-| launch | Launch prep | 2026-06-04 | 2026-06-07 | 20 | qa | Rowan |
+| id | name | start | end | progress | dependencies | assignee | lane |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| discovery | Discovery and scope | 2026-05-07 | 2026-05-10 | 0 | | Maya | product |
+| design | Design prototype | 2026-05-11 | 2026-05-16 | 0 | discovery | Leo | product |
+| build | Build beta | 2026-05-17 | 2026-05-27 | 0 | design | Aisha | engineering |
+| qa | QA and fixes | 2026-05-28 | 2026-06-03 | 0 | build | Quinn | engineering |
+| launch | Launch prep | 2026-06-04 | 2026-06-07 | 20 | qa | Rowan | engineering |
 
 ## Subtasks
 
@@ -77,10 +85,12 @@ export function parseProject(markdown) {
 
   const assigneeTable = findAssigneeTable(tables, taskTable);
   const subtaskTable = findSubtaskTable(tables, taskTable);
+  const laneTable = findLaneTable(tables, taskTable, assigneeTable, subtaskTable);
   const tasks = parseTasksFromTable(taskTable);
   validateTaskDependencies(tasks);
   const taskIds = new Set(tasks.map((task) => task.id));
   const subtasks = subtaskTable ? parseSubtasksFromTable(subtaskTable, taskIds) : [];
+  const lanes = laneTable ? parseLanesFromTable(laneTable) : [];
   const assignees = buildAssigneeDirectory(
     assigneeTable ? parseAssigneesFromTable(assigneeTable) : [],
     tasks,
@@ -94,8 +104,10 @@ export function parseProject(markdown) {
     taskTable,
     assigneeTable,
     subtaskTable,
+    laneTable,
     tasks,
     subtasks,
+    lanes,
     assignees,
     assigneeByName,
     subtasksByTask: groupBy(subtasks, (subtask) => subtask.task),
@@ -122,21 +134,20 @@ export function buildGanttTasks(project) {
 
 export function collectTaskLaneOptions(project) {
   const lanes = new Set();
-  const headers = canonicalHeaders(project.taskTable);
-  const laneIdx = headers.indexOf('lane');
+  const hasLaneTable = (project.lanes ?? []).length > 0;
 
-  if (laneIdx >= 0) {
-    for (const row of project.taskTable.rows) {
-      const cell = String(row[laneIdx] ?? '').trim();
-      if (cell) {
-        lanes.add(cell);
-      }
-    }
+  for (const lane of project.lanes ?? []) {
+    lanes.add(lane.id);
   }
 
-  for (const task of project.tasks) {
-    lanes.add(task.lane ?? task.id);
-    lanes.add(task.id);
+  if (!hasLaneTable) {
+    for (const task of project.tasks) {
+      const taskLane = String(task.lane ?? '').trim();
+      if (taskLane) {
+        lanes.add(taskLane);
+      }
+      lanes.add(task.id);
+    }
   }
 
   return [...lanes].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
@@ -169,13 +180,76 @@ export function updateSubtaskById(markdown, subtaskId, updates) {
   return updateTableRow(markdown, project.subtaskTable, rowLineIndex, updates);
 }
 
+export function removeSubtaskById(markdown, subtaskId) {
+  const project = parseProject(markdown);
+
+  if (!project.subtaskTable) {
+    throw new Error('No subtask table found.');
+  }
+
+  const rowLineIndex = findRowLineIndexById(project.subtaskTable, subtaskId);
+
+  if (rowLineIndex === null) {
+    throw new Error(`Could not find subtask row for "${subtaskId}".`);
+  }
+
+  const lines = markdown.split('\n');
+  lines.splice(rowLineIndex, 1);
+  return lines.join('\n');
+}
+
+export function removeLaneRow(markdown, laneId) {
+  const project = parseProject(markdown);
+
+  if (!project.laneTable) {
+    throw new Error('No lane table found.');
+  }
+
+  const rowLineIndex = findRowLineIndexById(project.laneTable, laneId);
+
+  if (rowLineIndex === null) {
+    throw new Error(`Could not find lane row for "${laneId}".`);
+  }
+
+  let next = markdown;
+  const headers = canonicalHeaders(project.taskTable);
+  if (headers.includes('lane')) {
+    for (const task of project.tasks) {
+      if (task.lane === laneId) {
+        next = updateTableRow(next, project.taskTable, task._markdownRowIndex, { lane: '' });
+      }
+    }
+  }
+
+  const refreshed = parseProject(next);
+  const deleteIndex = findRowLineIndexById(refreshed.laneTable, laneId);
+  if (deleteIndex === null) {
+    throw new Error(`Could not find lane row for "${laneId}".`);
+  }
+
+  const lines = next.split('\n');
+  lines.splice(deleteIndex, 1);
+  return lines.join('\n');
+}
+
+export function updateLaneById(markdown, laneId, updates) {
+  const project = parseProject(markdown);
+
+  if (!project.laneTable) {
+    throw new Error('No lane table found.');
+  }
+
+  const rowLineIndex = findRowLineIndexById(project.laneTable, laneId);
+
+  if (rowLineIndex === null) {
+    throw new Error(`Could not find lane row for "${laneId}".`);
+  }
+
+  return updateTableRow(markdown, project.laneTable, rowLineIndex, updates);
+}
+
 export function removeMarkdownTask(markdown, taskId) {
   const project = parseProject(markdown);
-  const subtasks = project.subtasksByTask.get(taskId) ?? [];
-
-  if (subtasks.length > 0) {
-    throw new Error('Remove all subtasks before deleting this task.');
-  }
 
   const rowLineIndex = findRowLineIndexById(project.taskTable, taskId);
 
@@ -185,18 +259,30 @@ export function removeMarkdownTask(markdown, taskId) {
 
   let next = markdown;
 
-  for (const task of project.tasks) {
-    if (task.id === taskId) {
-      continue;
+  // Remove subtasks belonging to this task (iterate in reverse line order to keep indices stable)
+  const subtasks = project.subtasksByTask.get(taskId) ?? [];
+  if (subtasks.length > 0 && project.subtaskTable) {
+    const subtaskLineIndices = subtasks
+      .map((s) => findRowLineIndexById(project.subtaskTable, s.id))
+      .filter((i) => i !== null)
+      .sort((a, b) => b - a);
+
+    const lines = next.split('\n');
+    for (const lineIndex of subtaskLineIndices) {
+      lines.splice(lineIndex, 1);
     }
+    next = lines.join('\n');
+  }
+
+  // Clean up dependency references to this task
+  const refreshedForDeps = parseProject(next);
+  for (const task of refreshedForDeps.tasks) {
+    if (task.id === taskId) continue;
 
     const deps = splitDependencies(task.dependencies);
+    if (!deps.includes(taskId)) continue;
 
-    if (!deps.includes(taskId)) {
-      continue;
-    }
-
-    next = updateTableRow(next, project.taskTable, task._markdownRowIndex, {
+    next = updateTableRow(next, refreshedForDeps.taskTable, task._markdownRowIndex, {
       dependencies: deps.filter((dependency) => dependency !== taskId).join(', '),
     });
   }
@@ -232,12 +318,60 @@ export function reorderTaskRows(markdown, orderedIds) {
   return lines.join('\n');
 }
 
+export function reorderLaneRows(markdown, orderedIds) {
+  const project = parseProject(markdown);
+
+  if (!project.laneTable) {
+    return markdown;
+  }
+
+  const lines = markdown.split('\n');
+  const rowById = new Map(
+    project.lanes.map((lane) => [lane.id, lines[lane._markdownRowIndex]]),
+  );
+  const orderedRows = orderedIds.map((id) => rowById.get(id)).filter(Boolean);
+  const remainingRows = project.lanes
+    .filter((lane) => !orderedIds.includes(lane.id))
+    .map((lane) => lines[lane._markdownRowIndex]);
+  const sortedRows = [...orderedRows, ...remainingRows];
+
+  project.laneTable.rowLineIndexes.forEach((lineIndex, index) => {
+    lines[lineIndex] = sortedRows[index] ?? lines[lineIndex];
+  });
+
+  return lines.join('\n');
+}
+
+export function appendLaneRow(markdown) {
+  const project = parseProject(markdown);
+
+  if (!project.laneTable) {
+    throw new Error('Add a lane table with columns: id, name, color.');
+  }
+
+  const existingIds = new Set(project.lanes.map((l) => l.id));
+  let index = project.lanes.length + 1;
+  while (existingIds.has(`lane-${index}`)) {
+    index += 1;
+  }
+
+  const newLaneId = `lane-${index}`;
+  const updated = appendRowToTable(markdown, project.laneTable, LANE_COLUMNS, {
+    id: newLaneId,
+    name: 'New lane',
+    color: '',
+  });
+
+  return { markdown: updated, newLaneId };
+}
+
 export function appendMarkdownTask(markdown) {
   const project = parseProject(markdown);
   const dates = getNewTaskDates(project);
+  const newTaskId = getNextTaskId(project);
 
-  return appendRowToTable(markdown, project.taskTable, TASK_COLUMNS, {
-    id: getNextTaskId(project),
+  const updated = appendRowToTable(markdown, project.taskTable, TASK_COLUMNS, {
+    id: newTaskId,
     name: 'New task',
     start: dates.start,
     end: dates.end,
@@ -245,6 +379,8 @@ export function appendMarkdownTask(markdown) {
     dependencies: '',
     assignee: '',
   });
+
+  return { markdown: updated, newTaskId };
 }
 
 export function appendMarkdownTaskAfter(markdown, afterTaskId, lane) {
@@ -331,7 +467,7 @@ function parseTasksFromTable(table) {
       progress: normalizeProgress(task.progress, name),
       dependencies: splitDependencies(task.dependencies).join(', '),
       assignee: task.assignee?.trim() ?? '',
-      lane: laneCell || id,
+      lane: laneCell,
       _markdownRowIndex: table.rowLineIndexes[index],
     };
   });
@@ -350,7 +486,6 @@ export function ensureTaskLaneColumn(markdown) {
   const nh = table.normalizedHeaders.map((header) => HEADER_ALIASES[header] ?? header);
   const assigneeIdx = nh.indexOf('assignee');
   const insertPos = assigneeIdx >= 0 ? assigneeIdx + 1 : nh.length;
-  const idIdx = nh.indexOf('id');
 
   const newHeaders = [...table.headers];
   newHeaders.splice(insertPos, 0, 'lane');
@@ -363,8 +498,7 @@ export function ensureTaskLaneColumn(markdown) {
   for (let index = 0; index < table.rows.length; index += 1) {
     const row = [...table.rows[index]];
     const lineIndex = table.rowLineIndexes[index];
-    const defaultLane = idIdx >= 0 ? String(row[idIdx] ?? '').trim() || `task-${index + 1}` : `task-${index + 1}`;
-    row.splice(insertPos, 0, defaultLane);
+    row.splice(insertPos, 0, '');
     lines[lineIndex] = formatMarkdownRow(row);
   }
 
@@ -559,6 +693,28 @@ function findSubtaskTable(tables, taskTable) {
     const headers = table.normalizedHeaders;
     return table !== taskTable && headers.includes('task') && headers.includes('name') && !headers.includes('start') && !headers.includes('end');
   }) ?? null;
+}
+
+function findLaneTable(tables, taskTable, assigneeTable, subtaskTable) {
+  const claimed = new Set([taskTable, assigneeTable, subtaskTable].filter(Boolean));
+  return tables.find((table) => {
+    if (claimed.has(table)) return false;
+    const headers = table.normalizedHeaders;
+    return headers.includes('id') && headers.includes('name') && headers.includes('color');
+  }) ?? null;
+}
+
+function parseLanesFromTable(table) {
+  const headers = canonicalHeaders(table);
+  return table.rows.map((row, index) => {
+    const lane = rowToObject(headers, row);
+    return {
+      id: String(lane.id ?? '').trim(),
+      name: String(lane.name ?? '').trim(),
+      color: normalizeColor(lane.color),
+      _markdownRowIndex: table.rowLineIndexes[index],
+    };
+  }).filter((lane) => lane.id);
 }
 
 function findRowLineIndexById(table, id, fallbackLineIndex = null) {
